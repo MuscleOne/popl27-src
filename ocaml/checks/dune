@@ -1,0 +1,45 @@
+(tests
+ (names source_binding source_typing source_reduction source_print)
+ (modules source_binding source_typing source_reduction source_print)
+ (libraries source_calculus))
+
+(test
+ (name runtime_binding)
+ (modules runtime_binding)
+ (libraries runtime_calculus runtime_input source_calculus source_frontend zoo))
+
+(test
+ (name runtime_state)
+ (modules runtime_state)
+ (libraries runtime_calculus))
+
+(test
+ (name runtime_typing)
+ (modules runtime_typing)
+ (libraries runtime_calculus runtime_input source_calculus source_frontend zoo))
+
+(test
+ (name runtime_reduction)
+ (modules runtime_reduction)
+ (libraries runtime_calculus runtime_input source_calculus source_frontend zoo))
+
+(test
+ (name runtime_observation)
+ (modules runtime_observation)
+ (libraries runtime_observation runtime_calculus runtime_input source_calculus source_frontend zoo))
+
+(test
+ (name parse_source)
+ (modules parse_source)
+ (libraries source_calculus source_frontend zoo))
+
+(rule
+ (alias runtest)
+ (action
+  (progn
+   (with-stdout-to source_cli.output
+    (run %{exe:../bin/source.exe} %{dep:../examples/runtime.async}))
+   (with-stdout-to runtime_cli.output
+    (run %{exe:../bin/runtime.exe} %{dep:../examples/runtime.async}))
+   (diff runtime_cli.expected source_cli.output)
+   (diff source_cli.output runtime_cli.output))))

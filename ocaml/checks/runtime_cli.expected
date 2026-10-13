@@ -1,0 +1,5 @@
+- : int = 24
+- : int = 22
+- : int = 22
+- : int = 23
+- : sexp = Pair(Int(21), Int(21))

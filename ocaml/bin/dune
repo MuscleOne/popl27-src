@@ -1,0 +1,9 @@
+(executable
+ (name source)
+ (modules source)
+ (libraries source_calculus source_frontend zoo))
+
+(executable
+ (name runtime)
+ (modules runtime)
+ (libraries runtime_calculus runtime_input runtime_observation source_calculus source_frontend zoo))

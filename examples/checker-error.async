@@ -1,0 +1,319 @@
+(* Representation helpers for the OO fragment described in README.md.
+   Inputs are formed AST encodings. first/second project their Pair fields. *)
+let first = fun (p : sexp) : sexp is
+  match p { Pair(x, y) => x | _ => Nil }
+in
+let second = fun (p : sexp) : sexp is
+  match p { Pair(x, y) => y | _ => Nil }
+in
+
+(* Specialised counterparts of return, (>>=), and mapM for Except TCError. *)
+let ok = fun (value : sexp) : sexp is Pair(Id("ok"), value) in
+let error = fun (kind : id, detail : sexp) : sexp is
+  Pair(Id("error"), Pair(Id(kind), detail))
+in
+let bind_result = fun (result : sexp, next : (sexp) -> sexp) : sexp is
+  match result {
+    Pair(tag, value) => match tag {
+      Id(name) => let success = name = "ok" in
+        if success then next(value) else result
+    | _ => result
+    }
+  | _ => result
+  }
+in
+let map_result = fix map_result(f : (sexp) -> sexp, xs : sexp) : sexp is
+  match xs {
+    Nil => ok(Nil)
+  | Pair(x, rest) =>
+      let result = f(x) in
+      bind_result(result, fun (checked : sexp) : sexp is
+        let results = map_result(f, rest) in
+        bind_result(results, fun (tail : sexp) : sexp is
+          ok(Pair(checked, tail))))
+  | _ => error("MalformedList", xs)
+  }
+in
+
+(* Entries are Pair(Id(name), payload); the first matching binding wins. *)
+let lookup = fix lookup(kind : id, name : id, entries : sexp) : sexp is
+  match entries {
+    Pair(entry, rest) =>
+      let key = first(entry) in
+      match key {
+        Id(candidate) => let same = name = candidate in
+          if same then let value = second(entry) in ok(value)
+          else lookup(kind, name, rest)
+      | _ => error("MalformedEntry", entry)
+      }
+  | _ => error(kind, Id(name))
+  }
+in
+
+let same_type = fun (left : sexp, right : sexp) : bool is
+  match left {
+    Id(a) => match right { Id(b) => a = b | _ => false }
+  | Pair(tag, name) => match right {
+      Pair(other_tag, other_name) => match name {
+        Id(a) => match other_name { Id(b) => a = b | _ => false }
+      | _ => false
+      }
+    | _ => false
+    }
+  | _ => false
+  }
+in
+let expect_type = fun (checked : sexp, expected : sexp) : sexp is
+  let actual = first(checked) in
+  let same = same_type(actual, expected) in
+  if same then ok(checked)
+  else error("TypeMismatchError", Pair(actual, expected))
+in
+
+(* Like addParameters: each parameter extends the current variable environment. *)
+let add_parameters = fix add_parameters(params : sexp, vars : sexp) : sexp is
+  match params {
+    Pair(param, rest) => add_parameters(rest, Pair(param, vars))
+  | _ => vars
+  }
+in
+(* Adapted from Initial.Typechecker, Castegren and Fernandez-Reyes (2019).
+   See LICENSE.upstream and README.md for provenance, encoding and differences. *)
+let check_type = fun (classes : sexp, ty : sexp) : sexp is
+  match ty {
+    Id(name) =>
+      let is_int = name = "int" in
+      let is_bool = name = "bool" in
+      let is_unit = name = "unit" in
+      if is_int then ok(ty) else if is_bool then ok(ty)
+      else if is_unit then ok(ty) else error("UnsupportedType", ty)
+  | Pair(tag, name) => match tag {
+      Id(kind) => let is_class = kind = "class" in
+        if is_class then match name {
+          Id(c) => let found = lookup("UnknownClassError", c, classes) in
+            bind_result(found, fun (definition : sexp) : sexp is ok(ty))
+        | _ => error("UnsupportedType", ty)
+        }
+        else error("UnsupportedType", ty)
+    | _ => error("UnsupportedType", ty)
+    }
+  | _ => error("UnsupportedType", ty)
+  }
+in
+
+(* lookupField / lookupMethod, after the receiver's type has been inferred. *)
+let lookup_member = fun (classes : sexp, ty : sexp, name : id, kind : id) : sexp is
+  match ty {
+    Pair(tag, class_name) => match class_name {
+      Id(c) =>
+        let found = lookup("UnknownClassError", c, classes) in
+        bind_result(found, fun (definition : sexp) : sexp is
+          let field = kind = "field" in
+          if field then
+            let fields = first(definition) in lookup("UnknownFieldError", name, fields)
+          else
+            let methods = second(definition) in lookup("UnknownMethodError", name, methods))
+    | _ => error("NonClassTypeError", ty)
+    }
+  | _ => error("NonClassTypeError", ty)
+  }
+in
+
+(* Successful expression checking returns Pair(type, annotated expression).
+   Children are annotated recursively, just as Initial.AST's etype fields are. *)
+let check_expr = fix check_expr(classes : sexp, vars : sexp, expr : sexp) : sexp is
+  match expr {
+    Int(n) => ok(Pair(Id("int"), expr))
+  | Bool(b) => ok(Pair(Id("bool"), expr))
+  | Id(name) =>
+      let found = lookup("UnboundVariableError", name, vars) in
+      bind_result(found, fun (ty : sexp) : sexp is ok(Pair(ty, expr)))
+  | Pair(tag, parts) => match tag {
+      Id(kind) =>
+        let field = kind = "field" in
+        let call = kind = "call" in
+        if field then
+          let target = first(parts) in
+          let name = second(parts) in
+          let result = check_expr(classes, vars, target) in
+          bind_result(result, fun (checked_target : sexp) : sexp is
+            let ty = first(checked_target) in
+            match name {
+              Id(f) => let found = lookup_member(classes, ty, f, "field") in
+                bind_result(found, fun (definition : sexp) : sexp is
+                  let field_type = second(definition) in
+                  ok(Pair(field_type, Pair(tag, Pair(checked_target, name)))))
+            | _ => error("UnsupportedExpression", expr)
+            })
+        else if call then
+          let target = first(parts) in
+          let call_parts = second(parts) in
+          let name = first(call_parts) in
+          let args = second(call_parts) in
+          let result = check_expr(classes, vars, target) in
+          bind_result(result, fun (checked_target : sexp) : sexp is
+            let ty = first(checked_target) in
+            match name {
+              Id(m) => let constructor = m = "init" in
+                if constructor then error("ConstructorCallError", ty) else
+                let found = lookup_member(classes, ty, m, "method") in
+                bind_result(found, fun (definition : sexp) : sexp is
+                  let params = first(definition) in
+                  let method_parts = second(definition) in
+                  let result_type = first(method_parts) in
+                  (* Unlike upstream zipWithM, require both lists to end together. *)
+                  let check_args = fix check_args(args : sexp, params : sexp) : sexp is
+                    match args {
+                      Nil => match params {
+                        Nil => ok(Nil)
+                      | _ => error("ArityError", name)
+                      }
+                    | Pair(arg, rest) => match params {
+                        Pair(param, more) =>
+                          let expected = second(param) in
+                          let inferred = check_expr(classes, vars, arg) in
+                          bind_result(inferred, fun (checked : sexp) : sexp is
+                            let matched = expect_type(checked, expected) in
+                            bind_result(matched, fun (checked_arg : sexp) : sexp is
+                              let remaining = check_args(rest, more) in
+                              bind_result(remaining, fun (checked_rest : sexp) : sexp is
+                                ok(Pair(checked_arg, checked_rest)))))
+                      | _ => error("ArityError", name)
+                      }
+                    | _ => error("UnsupportedExpression", expr)
+                    }
+                  in
+                  let checked_args = check_args(args, params) in
+                  bind_result(checked_args, fun (arguments : sexp) : sexp is
+                    ok(Pair(result_type, Pair(tag,
+                      Pair(checked_target, Pair(name, arguments)))))))
+            | _ => error("UnsupportedExpression", expr)
+            })
+        else error("UnsupportedExpression", expr)
+    | _ => error("UnsupportedExpression", expr)
+    }
+  | _ => error("UnsupportedExpression", expr)
+  }
+in
+
+let check_field = fun (classes : sexp, field : sexp) : sexp is
+  let parts = second(field) in
+  let ty = second(parts) in
+  let checked = check_type(classes, ty) in
+  bind_result(checked, fun (checked_ty : sexp) : sexp is ok(field))
+in
+
+let check_method = fun (classes : sexp, vars : sexp, method : sexp) : sexp is
+  let name = first(method) in
+  let definition = second(method) in
+  let params = first(definition) in
+  let parts = second(definition) in
+  let result_type = first(parts) in
+  let body = second(parts) in
+  let checked_params = map_result(fun (param : sexp) : sexp is
+    let ty = second(param) in
+    let checked = check_type(classes, ty) in
+    bind_result(checked, fun (checked_ty : sexp) : sexp is ok(param)), params) in
+  bind_result(checked_params, fun (parameters : sexp) : sexp is
+    let checked_type = check_type(classes, result_type) in
+    bind_result(checked_type, fun (expected : sexp) : sexp is
+      let extended = add_parameters(parameters, vars) in
+      let inferred = check_expr(classes, extended, body) in
+      bind_result(inferred, fun (checked_body : sexp) : sexp is
+        let matched = expect_type(checked_body, expected) in
+        bind_result(matched, fun (body : sexp) : sexp is
+          ok(Pair(name, Pair(parameters, Pair(expected, body))))))))
+in
+
+let check_class = fun (classes : sexp, cls : sexp) : sexp is
+  let name = first(cls) in
+  let definition = second(cls) in
+  let fields = first(definition) in
+  let methods = second(definition) in
+  let vars = Pair(Pair(Id("this"), Pair(Id("class"), name)), Nil) in
+  let checked_fields = map_result(fun (field : sexp) : sexp is
+    check_field(classes, field), fields) in
+  bind_result(checked_fields, fun (fields : sexp) : sexp is
+    let checked_methods = map_result(fun (method : sexp) : sexp is
+      check_method(classes, vars, method), methods) in
+    bind_result(checked_methods, fun (methods : sexp) : sexp is
+      ok(Pair(name, Pair(fields, methods)))))
+in
+
+(* The program itself is the immutable class table. All declarations are already
+   available, including those later in the input; checking never evaluates a body. *)
+let check_program = fun (program : sexp) : sexp is
+  map_result(fun (cls : sexp) : sexp is check_class(program, cls), program)
+in
+(* Combine in program order: an error in head takes precedence over tail.
+   On success, retain both annotated subtrees, as sequential map_result does. *)
+let cons_result = fun (head : sexp, tail : sexp) : sexp is
+  bind_result(head, fun (checked : sexp) : sexp is
+    bind_result(tail, fun (rest : sexp) : sexp is
+      ok(Pair(checked, rest))))
+in
+
+(* Create every independent check before inspecting any of its results.
+   Under runtime execution this returns a list whose elements are futures. *)
+let spawn_checks = fix spawn_checks(f : (sexp) -> sexp, items : sexp) : sexp is
+  match items {
+    Nil => Nil
+  | Pair(item, rest) =>
+      let result = async f(item) in
+      let results = spawn_checks(f, rest) in
+      Pair(result, results)
+  | _ => Nil
+  }
+in
+
+let collect_results = fix collect_results(results : sexp) : sexp is
+  match results {
+    Nil => ok(Nil)
+  | Pair(result, rest) =>
+      let tail = collect_results(rest) in
+      cons_result(result, tail)
+  | _ => error("MalformedList", results)
+  }
+in
+
+let check_program_async = fun (program : sexp) : sexp is
+  let checks = spawn_checks(fun (cls : sexp) : sexp is
+    check_class(program, cls), program) in
+  collect_results(checks)
+in
+(* Initial.Typechecker's ClassDef checks fields, checks methods, then rebuilds
+   the class. Here the method checks run in one explicit async task per class. *)
+let check_class_async = fun (classes : sexp, cls : sexp) : sexp is
+  let name = first(cls) in
+  let definition = second(cls) in
+  let fields = first(definition) in
+  let methods = second(definition) in
+  let vars = Pair(Pair(Id("this"), Pair(Id("class"), name)), Nil) in
+  let checked_fields = map_result(fun (field : sexp) : sexp is
+    check_field(classes, field), fields) in
+  bind_result(checked_fields, fun (fields : sexp) : sexp is
+    let checked_methods = async map_result(fun (method : sexp) : sexp is
+      check_method(classes, vars, method), methods) in
+    bind_result(checked_methods, fun (methods : sexp) : sexp is
+      ok(Pair(name, Pair(fields, methods)))))
+in
+
+(* Keep the remaining classes outside the callback that inspects this result.
+   When f's computation reaches an application with an unfinished future
+   argument, this let permits Spawn-App and traversal can continue. *)
+let check_classes = fix check_classes(f : (sexp) -> sexp, classes : sexp) : sexp is
+  match classes {
+    Nil => ok(Nil)
+  | Pair(cls, rest) =>
+      let checked = f(cls) in
+      let remaining = check_classes(f, rest) in
+      cons_result(checked, remaining)
+  | _ => error("MalformedList", classes)
+  }
+in
+
+let check_program_delegated = fun (program : sexp) : sexp is
+  check_classes(fun (cls : sexp) : sexp is
+    check_class_async(program, cls), program)
+in
+check_program_delegated(Pair(Pair(Id("Client"), Pair(Nil, Pair(Pair(Id("run"), Pair(Pair(Pair(Id("b"), Pair(Id("class"), Id("Box"))), Nil), Pair(Id("int"), Bool(false)))), Nil))), Pair(Pair(Id("Box"), Pair(Pair(Pair(Id("value"), Pair(Id("val"), Id("int"))), Nil), Pair(Pair(Id("get"), Pair(Nil, Pair(Id("int"), Pair(Id("field"), Pair(Id("this"), Id("value")))))), Pair(Pair(Id("echo"), Pair(Pair(Pair(Id("n"), Id("int")), Nil), Pair(Id("int"), Id("n")))), Pair(Pair(Id("flag"), Pair(Nil, Pair(Id("bool"), Bool(true)))), Nil))))), Nil)))

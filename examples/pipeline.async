@@ -1,0 +1,39 @@
+(* Return the head now; generate the finite tail in an async task. *)
+let produce = fix produce(n : int) : sexp is
+  let finished = n < 1 in
+  if finished then Nil else
+    let previous = n - 1 in
+    let tail = async produce(previous) in
+    Pair(Int(n), tail)
+in
+let double_item = fun (item : sexp) : sexp is
+  match item {
+    Int(n) => let doubled = n * 2 in Int(doubled)
+  | _ => item
+  }
+in
+let double_list = fix double_list(xs : sexp) : sexp is
+  match xs {
+    Pair(head, tail) =>
+      let new_head = double_item(head) in
+      let new_tail = double_list(tail) in
+      Pair(new_head, new_tail)
+  | _ => xs
+  }
+in
+let sum_list = fix sum_list(xs : sexp) : int is
+  match xs {
+    Nil => 0
+  | Pair(head, tail) =>
+      match head {
+        Int(n) => let rest = sum_list(tail) in n + rest
+      | _ => 0
+      }
+  | _ => 0
+  }
+in
+(* Ordinary calls connect the stages; only produce explicitly uses async. *)
+let xs = produce(3) in
+let ys = double_list(xs) in
+let total = sum_list(ys) in
+Pair(ys, Int(total))

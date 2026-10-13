@@ -1,0 +1,9 @@
+(library
+ (name source_frontend)
+ (libraries calculus_common source_calculus zoo))
+
+(menhir
+ (modules parser)
+ (flags --strict))
+
+(ocamllex lexer)

@@ -1,0 +1,23 @@
+(* The focus computes y while p still stores 20 + 1. Result: 24. *)
+let p = async (20 + 1) in
+let y = 1 + 2 in
+p + y;;
+
+(* Addition needs an integer literal, so p must be dereferenced. Result: 22. *)
+let p = async (20 + 1) in
+p + 1;;
+
+(* A function in the focus can beta-reduce with a future argument. Result: 22. *)
+let inc = fun (x : int) : int is x + 1 in
+let p = async (20 + 1) in
+inc(p);;
+
+(* At this let, the application spawns; r + 1 is the continuation. Result: 23. *)
+let inc = fun (x : int) : int is x + 1 in
+let p = async (20 + 1) in
+let r = inc(p) in
+r + 1;;
+
+(* A final Pair may contain shared futures; observation unravels both fields. *)
+let p = async (Int(21)) in
+Pair(p, p)

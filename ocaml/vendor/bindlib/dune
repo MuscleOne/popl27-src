@@ -1,0 +1,6 @@
+(library
+ (name bindlib)
+ (wrapped false)
+ (modules bindlib)
+ (preprocess
+  (action (run ocaml %{dep:pp.ml} %{ocaml_version} %{input-file}))))

@@ -1,0 +1,24 @@
+(library
+ (name calculus_common)
+ (wrapped false)
+ (modules common_syntax))
+
+(library
+ (name source_calculus)
+ (modules syntax binding typing reduction print)
+ (libraries calculus_common zarith bindlib))
+
+(library
+ (name runtime_calculus)
+ (modules runtime_syntax runtime_binding runtime_state runtime_typing runtime_reduction runtime_print)
+ (libraries calculus_common zarith bindlib))
+
+(library
+ (name runtime_input)
+ (modules runtime_input)
+ (libraries source_calculus runtime_calculus))
+
+(library
+ (name runtime_observation)
+ (modules runtime_observation)
+ (libraries source_calculus runtime_calculus))
